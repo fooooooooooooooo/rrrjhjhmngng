@@ -1,165 +1,67 @@
-use std::vec::IntoIter;
-
-use chumsky::input::Stream;
 use chumsky::prelude::*;
-use chumsky::{input::SpannedInput, span::SimpleSpan};
-use logos::Logos;
 
-use crate::lexer::Token;
+#[derive(Clone, Debug)]
+pub struct Target<'a>(pub &'a str, pub Option<Format<'a>>);
 
-#[derive(Debug, PartialEq)]
-pub struct Format<'a>(pub Option<&'a str>, pub Option<(f32, f32, f32)>);
-
-type ParserError<'a, T> = extra::Err<Rich<'a, T>>;
-type ParserInput<'a> =
-    SpannedInput<Token<'a>, SimpleSpan, Stream<IntoIter<(Token<'a>, SimpleSpan)>>>;
-
-fn number_parser<'i>() -> impl Parser<'i, ParserInput<'i>, f32, ParserError<'i, Token<'i>>> + Clone
-{
-    let number = select! { Token::Number(i) => i };
-
-    number.from_str::<f32>().unwrapped()
+#[derive(Clone, Debug)]
+pub enum Format<'a> {
+  Full(&'a str, (f32, f32, f32)),
+  Name(&'a str),
+  Values((f32, f32, f32)),
 }
 
-fn define_parser<'i>() -> impl Parser<'i, ParserInput<'i>, (), ParserError<'i, Token<'i>>> + Clone {
-    select! { Token::Define => () }
+type ParseResult<'a> = Vec<(Target<'a>, SimpleSpan)>;
+
+pub fn parse(input: &str) -> (Option<ParseResult>, Vec<Rich<'_, char>>) {
+  let (colors, parse_errors) = parser().parse(input).into_output_errors();
+
+  (colors, parse_errors)
 }
 
-fn identifier_parser<'i>(
-) -> impl Parser<'i, ParserInput<'i>, &'i str, ParserError<'i, Token<'i>>> + Clone {
-    select! { Token::Identifier(id) => id }
-}
+fn parser<'i>() -> impl Parser<'i, &'i str, ParseResult<'i>, extra::Err<Rich<'i, char>>> {
+  let ident = text::ident().padded();
 
-fn format_parser<'i>(
-) -> impl Parser<'i, ParserInput<'i>, Format<'i>, ParserError<'i, Token<'i>>> + Clone {
-    let format_name = identifier_parser();
+  let digits = text::digits(10).slice();
 
-    let format_values = number_parser()
-        .repeated()
-        .at_least(3)
-        .at_most(3)
-        .collect_exactly::<[f32; 3]>()
-        .map(|v| (v[0], v[1], v[2]))
-        .delimited_by(just(Token::LParen), just(Token::RParen));
+  let frac = just('.').then(digits);
 
-    just(Token::Dot)
-        .ignore_then(format_name)
-        .or_not()
-        .then(format_values.or_not())
-        .map(|(name, values)| Format(name, values))
-}
+  let number = just('-')
+    .or_not()
+    .then(text::int(10))
+    .then(frac.or_not())
+    .map_slice(|s: &str| s.parse().unwrap())
+    .boxed();
 
-pub type Color<'a> = (&'a str, &'a str, Format<'a>);
-pub type ParseError<'a> = Rich<'a, Token<'a>>;
-pub type Errors<'a> = (Vec<ParseError<'a>>, Vec<ParseError<'a>>);
+  let format_values = number
+    .padded()
+    .repeated()
+    .at_least(3)
+    .at_most(3)
+    .collect_exactly::<[f32; 3]>()
+    .map(|v| (v[0], v[1], v[2]))
+    .delimited_by(just("("), just(")"));
 
-pub fn parse(input: &str) -> (Option<Vec<Color>>, Errors) {
-    let mut tokenizer_errors = Vec::new();
+  let format = just(".")
+    .or_not()
+    .ignore_then(ident.or_not())
+    .then(format_values.or_not())
+    .map(|format| match format {
+      (Some(name), Some(values)) => Some(Format::Full(name, values)),
+      (None, None) => None,
+      (None, Some(values)) => Some(Format::Values(values)),
+      (Some(name), None) => Some(Format::Name(name)),
+    });
 
-    let tokens = Token::lexer(input)
-        .spanned()
-        .filter_map(|(token, range)| {
-            let span = SimpleSpan::from(range.clone());
+  let target = ident
+    .then(format)
+    .map(|(name, format)| Target(name, format))
+    .delimited_by(just("@{"), just("}"));
 
-            match token {
-                Err(_) => {
-                    tokenizer_errors.push(ParseError::custom(
-                        span,
-                        format!("invalid token '{}'", &input[range]),
-                    ));
-
-                    None
-                }
-                Ok(token) => Some((token, span)),
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let length = tokens.len();
-    let tokens_stream: ParserInput<'_> = Stream::from_iter(tokens).spanned((length..length).into());
-
-    let (colors, parse_errors) = parser().parse(tokens_stream).into_output_errors();
-
-    (colors, (tokenizer_errors, parse_errors))
-}
-
-fn parser<'i>() -> impl Parser<'i, ParserInput<'i>, Vec<Color<'i>>, ParserError<'i, Token<'i>>> {
-    let name = identifier_parser();
-    let key = identifier_parser();
-
-    let values = key.then(format_parser()).delimited_by(
-        just(Token::Asperand).then(just(Token::LBracket)),
-        just(Token::RBracket),
-    );
-
-    let color = name
-        .then(values)
-        .map(|(name, (key, format))| (name, key, format))
-        .then_ignore(just(Token::Semi));
-
-    define_parser()
-        .or_not()
-        .ignore_then(color)
-        .repeated()
-        .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn stream_token_vec(
-        tokens: Vec<Token>,
-    ) -> SpannedInput<Token, SimpleSpan, Stream<IntoIter<(Token, SimpleSpan)>>> {
-        let tokens = tokens
-            .into_iter()
-            .map(|t| (t, SimpleSpan::from(0usize..0)))
-            .collect::<Vec<_>>();
-
-        let length = tokens.len();
-        Stream::from_iter(tokens).spanned((length..length).into())
-    }
-
-    #[test]
-    fn number_parser_works() {
-        let tests = vec![
-            (Token::Number("10"), 10f32),
-            (Token::Number("49.123"), 49.123f32),
-            (Token::Number("-124"), -124f32),
-            (Token::Number("-618.4368"), -618.4368f32),
-        ];
-
-        for (token, expected) in tests {
-            let res = number_parser()
-                .parse(stream_token_vec(vec![token]))
-                .into_result();
-
-            assert!(res.is_ok());
-
-            let val = res.unwrap();
-
-            assert_eq!(expected, val);
-        }
-    }
-
-    #[test]
-    fn ident_parser_works() {
-        let tests = vec![
-            (Token::Identifier("swag"), "swag"),
-            (Token::Identifier("sw_ag"), "sw_ag"),
-            (Token::Identifier("swag23"), "swag23"),
-        ];
-
-        for (token, expected) in tests {
-            let res = identifier_parser()
-                .parse(stream_token_vec(vec![token]))
-                .into_result();
-
-            assert!(res.is_ok());
-
-            let val = res.unwrap();
-
-            assert_eq!(expected, val);
-        }
-    }
+  any()
+    .and_is(just("@{").not())
+    .repeated()
+    .ignore_then(target.map_with_span(|a, b| (a, b)))
+    .repeated()
+    .collect()
+    .lazy()
 }

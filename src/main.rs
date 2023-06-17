@@ -1,20 +1,31 @@
 use ariadne::{sources, Color, Label, Report, ReportKind};
-use lexington::parser::parse;
+use lexington::parser::{parse, Format, Target};
 
 const FILENAME: &str = "tests.css";
 
 fn main() {
   let src = std::fs::read_to_string(FILENAME).unwrap();
 
-  let (tokens, (tokenizing_errors, parser_errors)) = parse(&src);
+  let (targets, errors) = parse(&src);
 
-  if let Some(tokens) = &tokens {
-    for (name, key, format) in tokens {
-      println!("name: {name:?}, key: {key:?}, format: {:?}, {:?}", format.0, format.1)
+  if let Some(targets) = targets {
+    for (Target(name, format), span) in targets {
+      let format = match format {
+        Some(Format::Full(n, v)) => format!("{n: >5}({}, {}, {})", v.0, v.1, v.2),
+        Some(Format::Name(n)) => format!("{n: >5}()"),
+        Some(Format::Values(v)) => format!("     ({}, {}, {})", v.0, v.1, v.2),
+        None => String::new(),
+      };
+
+      let source = format!("{:<42}", &src[span.into_range()]);
+      let span = format!("{:<10}", span.to_string());
+      let name = format!("{:<24}", name);
+
+      println!("{span} = {source} | {name} {format}");
     }
   }
 
-  tokenizing_errors.into_iter().chain(parser_errors).for_each(|e| {
+  errors.into_iter().for_each(|e| {
     Report::build(ReportKind::Error, FILENAME, e.span().start)
       .with_message(e.to_string())
       .with_label(
