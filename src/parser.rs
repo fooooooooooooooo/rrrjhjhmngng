@@ -20,9 +20,7 @@ pub fn parse(input: &str) -> (Option<ParseResult>, Vec<Rich<'_, char>>) {
 
 fn parser<'i>() -> impl Parser<'i, &'i str, ParseResult<'i>, extra::Err<Rich<'i, char>>> {
   let ident = text::ident().padded();
-
   let digits = text::digits(10).slice();
-
   let frac = just('.').then(digits);
 
   let number = just('-')
@@ -57,11 +55,11 @@ fn parser<'i>() -> impl Parser<'i, &'i str, ParseResult<'i>, extra::Err<Rich<'i,
     .map(|(name, format)| Target(name, format))
     .delimited_by(just("@{"), just("}"));
 
-  any()
-    .and_is(just("@{").not())
-    .repeated()
-    .ignore_then(target.map_with_span(|a, b| (a, b)))
+  let not_start_sequence = any().and_is(just("@{").not()).repeated();
+
+  not_start_sequence
+    .ignore_then(target.map_with_span(|a: Target<'_>, b| (a, b)))
+    .then_ignore(not_start_sequence)
     .repeated()
     .collect()
-    .lazy()
 }
