@@ -57,9 +57,9 @@ fn parser<'i>() -> impl Parser<'i, &'i str, ParseResult<'i>, extra::Err<Rich<'i,
 
   let not_start_sequence = any().and_is(just("@{").not()).repeated();
 
-  not_start_sequence
-    .ignore_then(target.map_with_span(|a: Target<'_>, b| (a, b)))
-    .then_ignore(not_start_sequence)
+  target
+    .map_with_span(|target, span| (target, span))
+    .delimited_by(not_start_sequence, not_start_sequence)
     .repeated()
     .collect()
 }
